@@ -149,7 +149,7 @@ export function renderHumanSummaryItem(
   summary: { id: number; request: string | null },
   formattedTime: string
 ): string[] {
-  const summaryTitle = `${summary.request || 'Session started'} (${formattedTime})`;
+  const summaryTitle = `${summary.request || 'セッション開始'} (${formattedTime})`;
   return [
     `${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle}`,
     ''

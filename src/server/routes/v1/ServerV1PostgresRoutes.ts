@@ -26,6 +26,7 @@ import { PostgresServerSessionsRepository } from '../../../storage/postgres/serv
 import type { ServerSessionGenerationPolicy } from '../../runtime/SessionGenerationPolicy.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
+import { normalizeProjectMetadata } from '../../../shared/project-display-name.js';
 
 const SOURCE_ADAPTER_DEFAULT = 'api';
 
@@ -706,7 +707,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
               agentId: body.agentId ?? null,
               agentType: body.agentType ?? null,
               platformSource: body.platformSource ?? null,
-              metadata: (body.metadata ?? {}) as Record<string, unknown>,
+              metadata: normalizeProjectMetadata((body.metadata ?? {}) as Record<string, unknown>),
             });
           } catch (error) {
             // Concurrent /v1/sessions/start with the same externalSessionId
@@ -840,7 +841,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             serverSessionId: body.serverSessionId ?? null,
             kind: body.kind ?? 'manual',
             content: body.content,
-            metadata: body.metadata ?? {},
+            metadata: normalizeProjectMetadata(body.metadata ?? {}),
           });
           await this.auditWrite(req, 'memory.write', observation.id, observation.projectId);
           res.status(201).json({ memory: serializeObservation(observation) });
@@ -1009,10 +1010,10 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       eventType: body.eventType,
       platformSource: body.platformSource ?? null,
       payload: (body.payload ?? {}) as object,
-      metadata: typeof (body as Record<string, unknown>).metadata === 'object'
+      metadata: normalizeProjectMetadata(typeof (body as Record<string, unknown>).metadata === 'object'
         && (body as Record<string, unknown>).metadata !== null
         ? ((body as Record<string, unknown>).metadata as Record<string, unknown>)
-        : {},
+        : {}),
       occurredAt: new Date(occurredAtEpoch),
     };
   }
@@ -1147,9 +1148,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
   //     would persist a parallel set of observations. Operator must
   //     create a new generation request instead of retrying.
   //   - failed/cancelled: reset to queued, clear locks, bump retried_count
-  //     in payload metadata for audit, then re-enqueue. The deterministic
-  //     BullMQ jobId means a duplicate transport publish collapses on the
-  //     queue side too.
+  //     in payload metadata for audit, then re-enqueue with a retry-suffixed
+  //     BullMQ jobId so an old terminal queue slot cannot block execution.
   private async retryGenerationJob(
     req: Request,
     res: Response,
@@ -1165,7 +1165,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       `SELECT * FROM observation_generation_jobs WHERE id = $1 AND team_id = $2`,
       [id, teamId],
     );
-    const row = lookup.rows[0] as undefined | { project_id: string };
+    const row = lookup.rows[0] as undefined | { project_id: string; bullmq_job_id: string | null };
     if (!row) {
       res.status(404).json({ error: 'NotFound', message: 'Generation job not found' });
       return null;
@@ -1223,9 +1223,9 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // BullMQ attempt cap is not bypassed; if the job hit max_attempts the
     // operator must lift the cap explicitly via a separate flow.
     //
-    // current.payload is the canonical BullMQ payload persisted at outbox
-    // create time (kind/team_id/project_id/source_type/source_id/
-    // generation_job_id/api_key_id/actor_id/source_adapter/request_id).
+    // Rebuild the canonical BullMQ payload from the current DB row rather
+    // than trusting the persisted JSON blob: older rows may carry stale
+    // generation_job_id values from a previous retry/buggy enqueue.
     // The retry adds operator metadata to the persisted row but enqueues
     // ONLY the BullMQ payload — the worker calls
     // assertServerGenerationJobPayload(job.data) on receipt and would reject
@@ -1234,8 +1234,9 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     const persistedBullmqPayload = (current.payload && typeof current.payload === 'object'
       ? current.payload
       : {}) as Record<string, unknown>;
+    const canonicalBullmqPayload = buildCanonicalRetryPayload(current, persistedBullmqPayload);
     const newPayload = {
-      ...persistedBullmqPayload,
+      ...canonicalBullmqPayload,
       retried_count: retriedCount,
       last_retried_by_actor: req.authContext?.apiKeyId ?? null,
       last_retried_request_id: req.requestId ?? null,
@@ -1244,9 +1245,14 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     // the worker logs/audit attribute this run to the operator's request)
     // but keep all canonical job context that the worker validates against.
     const retryBullmqPayload = {
-      ...persistedBullmqPayload,
+      ...canonicalBullmqPayload,
       request_id: req.requestId ?? (persistedBullmqPayload as { request_id?: unknown }).request_id ?? null,
     };
+    const priorBullmqJobId = typeof (row as { bullmq_job_id?: unknown }).bullmq_job_id === 'string'
+      ? (row as { bullmq_job_id: string }).bullmq_job_id
+      : null;
+    const baseBullmqJobId = priorBullmqJobId?.replace(/_retry_\d+$/, '') ?? null;
+    const retryBullmqJobId = baseBullmqJobId ? `${baseBullmqJobId}_retry_${retriedCount}` : null;
     const updated = await this.options.pool.query(
       `
         UPDATE observation_generation_jobs
@@ -1258,12 +1264,13 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             completed_at = NULL,
             last_error = NULL,
             attempts = LEAST(attempts, max_attempts - 1),
+            bullmq_job_id = COALESCE($5, bullmq_job_id),
             payload = $4::jsonb,
             updated_at = now()
         WHERE id = $1 AND project_id = $2 AND team_id = $3
         RETURNING *
       `,
-      [id, row.project_id, teamId, JSON.stringify(newPayload)],
+      [id, row.project_id, teamId, JSON.stringify(newPayload), retryBullmqJobId],
     );
     const updatedRow = updated.rows[0];
     if (!updatedRow) {
@@ -1294,6 +1301,9 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     if (queue && updatedRow) {
       try {
         const bullmqJobId = (updatedRow as { bullmq_job_id: string | null }).bullmq_job_id;
+        if (priorBullmqJobId && priorBullmqJobId !== bullmqJobId) {
+          try { await queue.remove(priorBullmqJobId); } catch { /* terminal slot may be missing — ok */ }
+        }
         if (bullmqJobId) {
           // Best effort remove first so a terminal-state slot doesn't block.
           try { await queue.remove(bullmqJobId); } catch { /* terminal slot may be missing — ok */ }
@@ -1523,6 +1533,47 @@ function extractRetriedCount(payload: Record<string, unknown> | null | undefined
     return Math.floor(value);
   }
   return 0;
+}
+
+function buildCanonicalRetryPayload(
+  job: PostgresObservationGenerationJob,
+  persisted: Record<string, unknown>,
+): Record<string, unknown> {
+  const base = {
+    ...persisted,
+    team_id: job.teamId,
+    project_id: job.projectId,
+    source_type: job.sourceType,
+    source_id: job.sourceId,
+    generation_job_id: job.id,
+    api_key_id: typeof persisted.api_key_id === 'string' ? persisted.api_key_id : null,
+    actor_id: typeof persisted.actor_id === 'string' ? persisted.actor_id : null,
+    source_adapter: typeof persisted.source_adapter === 'string' && persisted.source_adapter.trim().length > 0
+      ? persisted.source_adapter
+      : 'operator_retry',
+  };
+
+  if (job.sourceType === 'session_summary') {
+    return {
+      ...base,
+      kind: 'summary',
+      server_session_id: job.serverSessionId ?? job.sourceId,
+    };
+  }
+
+  if (job.sourceType === 'agent_event') {
+    return {
+      ...base,
+      kind: 'event',
+      agent_event_id: job.agentEventId ?? job.sourceId,
+    };
+  }
+
+  return {
+    ...base,
+    kind: 'reindex',
+    observation_id: job.sourceId,
+  };
 }
 
 const JOB_LIST_STATUS_VALUES = new Set(['queued', 'processing', 'completed', 'failed', 'cancelled']);

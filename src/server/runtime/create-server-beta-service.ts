@@ -3,13 +3,21 @@
 import { existsSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { ModeManager } from '../../services/domain/ModeManager.js';
-import { createPostgresStorageRepositories, getSharedPostgresPool, SERVER_BETA_POSTGRES_SCHEMA_VERSION } from '../../storage/postgres/index.js';
+import {
+  createPostgresStorageRepositories,
+  getSharedPostgresPool,
+  SERVER_BETA_POSTGRES_SCHEMA_VERSION,
+  type PostgresStorageRepositories,
+} from '../../storage/postgres/index.js';
 import { bootstrapServerBetaPostgresSchema } from '../../storage/postgres/schema.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { getRedisQueueConfig } from '../queue/redis-config.js';
 import { ActiveServerBetaQueueManager } from './ActiveServerBetaQueueManager.js';
 import { ActiveServerBetaGenerationWorkerManager } from './ActiveServerBetaGenerationWorkerManager.js';
+import { reconcileOnStartup, type SingleSourceJobPayload } from '../jobs/outbox.js';
+import type { ServerJobQueue } from '../jobs/ServerJobQueue.js';
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
+import { ClaudeSdkObservationProvider } from '../generation/providers/ClaudeSdkObservationProvider.js';
 import { GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
@@ -196,6 +204,7 @@ export async function createServerBetaService(
   const pool = options.pool ?? getSharedPostgresPool({ requireDatabaseUrl: true });
   const bootstrap = await initializePostgres(pool, options.bootstrapSchema ?? true);
   const queueManager = options.queueManager ?? buildQueueManager();
+  const storage = createPostgresStorageRepositories(pool);
   const generationDisabled = options.generationDisabled
     ?? (process.env.CLAUDE_MEM_GENERATION_DISABLED === '1'
       || process.env.CLAUDE_MEM_GENERATION_DISABLED === 'true');
@@ -216,14 +225,78 @@ export async function createServerBetaService(
     generationWorkerManager,
     providerRegistry: new DisabledServerBetaProviderRegistry('Phase 5 keeps the provider registry boundary as inert; per-call providers are owned by the generation worker manager.'),
     eventBroadcaster: new DisabledServerBetaEventBroadcaster('Phase 2 boundary only; SSE/event broadcasting is not wired.'),
-    storage: createPostgresStorageRepositories(pool),
+    storage,
   };
 
   if (generationWorkerManager instanceof ActiveServerBetaGenerationWorkerManager) {
+    if (queueManager instanceof ActiveServerBetaQueueManager) {
+      await reconcileServerBetaOutboxOnWorkerStartup(pool, queueManager, storage);
+    }
     generationWorkerManager.start();
   }
 
   return new ServerBetaService({ graph });
+}
+
+async function reconcileServerBetaOutboxOnWorkerStartup(
+  pool: PostgresPool,
+  queueManager: ActiveServerBetaQueueManager,
+  storage: PostgresStorageRepositories,
+): Promise<void> {
+  const scopeResult = await pool.query<{ team_id: string; project_id: string }>(
+    `
+      SELECT DISTINCT team_id, project_id
+      FROM observation_generation_jobs
+      WHERE status IN ('queued', 'processing')
+        AND attempts < max_attempts
+      ORDER BY team_id, project_id
+    `,
+  );
+  if (scopeResult.rows.length === 0) {
+    return;
+  }
+
+  const lanes = [
+    { kind: 'event' as const, sourceTypes: ['agent_event' as const] },
+    { kind: 'summary' as const, sourceTypes: ['session_summary' as const] },
+  ];
+  let totalRequeued = 0;
+  let totalSkipped = 0;
+
+  for (const scope of scopeResult.rows) {
+    for (const lane of lanes) {
+      const queue = queueManager.getQueue(lane.kind) as unknown as ServerJobQueue<SingleSourceJobPayload>;
+      try {
+        const result = await reconcileOnStartup(
+          storage.observationGenerationJobs,
+          storage.observationGenerationJobEvents,
+          queue,
+          {
+            projectId: scope.project_id,
+            teamId: scope.team_id,
+          },
+          {
+            sourceTypes: [...lane.sourceTypes],
+          },
+        );
+        totalRequeued += result.requeued;
+        totalSkipped += result.skipped;
+      } catch (error) {
+        logger.warn('QUEUE', 'server-beta startup reconciliation failed for lane', {
+          teamId: scope.team_id,
+          projectId: scope.project_id,
+          lane: lane.kind,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  logger.info('QUEUE', 'server-beta startup reconciliation completed', {
+    scopes: scopeResult.rows.length,
+    requeued: totalRequeued,
+    skipped: totalSkipped,
+  });
 }
 
 function buildGenerationWorkerManager(
@@ -239,7 +312,7 @@ function buildGenerationWorkerManager(
   const provider = injectedProvider ?? buildServerGenerationProviderFromEnv();
   if (!provider) {
     return new DisabledServerBetaGenerationWorkerManager(
-      'no server generation provider configured; set CLAUDE_MEM_SERVER_PROVIDER and the matching API key to enable.',
+      'no server generation provider configured; set CLAUDE_MEM_SERVER_PROVIDER and the matching auth credentials to enable.',
     );
   }
   return new ActiveServerBetaGenerationWorkerManager({
@@ -255,10 +328,18 @@ function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null
   try {
     if (provider === 'claude' || provider === 'anthropic') {
       const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.CLAUDE_MEM_ANTHROPIC_API_KEY ?? '';
-      if (!apiKey) return null;
-      const opts: { apiKey: string; model?: string } = { apiKey };
-      if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
-      return new ClaudeObservationProvider(opts);
+      const authMethod = resolveServerClaudeAuthMethod(apiKey);
+      const model = process.env.CLAUDE_MEM_SERVER_MODEL;
+      if (authMethod === 'api-key') {
+        if (!apiKey) return null;
+        const opts: { apiKey: string; model?: string } = { apiKey };
+        if (model) opts.model = model;
+        return new ClaudeObservationProvider(opts);
+      }
+      if (authMethod === 'subscription' || authMethod === 'cli' || authMethod === 'oauth') {
+        return new ClaudeSdkObservationProvider(model ? { model } : {});
+      }
+      return null;
     }
     if (provider === 'gemini') {
       const apiKey = process.env.GEMINI_API_KEY ?? process.env.CLAUDE_MEM_GEMINI_API_KEY ?? '';
@@ -277,10 +358,34 @@ function buildServerGenerationProviderFromEnv(): ServerGenerationProvider | null
       if (baseUrl) opts.baseUrl = baseUrl;
       return new OpenRouterObservationProvider(opts);
     }
-  } catch {
+  } catch (error) {
+    logger.warn(
+      'SYSTEM',
+      'server-beta generation provider configuration failed',
+      { provider },
+      error instanceof Error ? error : new Error(String(error)),
+    );
     return null;
   }
   return null;
+}
+
+function resolveServerClaudeAuthMethod(apiKey: string): 'api-key' | 'subscription' | 'cli' | 'oauth' | 'unknown' {
+  const raw = (
+    process.env.CLAUDE_MEM_SERVER_CLAUDE_AUTH_METHOD ??
+    process.env.CLAUDE_MEM_CLAUDE_AUTH_METHOD ??
+    ''
+  ).trim().toLowerCase();
+
+  if (raw === 'api-key' || raw === 'api_key' || raw === 'anthropic-api-key') return 'api-key';
+  if (raw === 'subscription' || raw === 'pro') return 'subscription';
+  if (raw === 'cli' || raw === 'claude-code') return 'cli';
+  if (raw === 'oauth' || raw === 'claude-code-oauth') return 'oauth';
+
+  // Preserve API-key behavior when a key is explicitly present, but make the
+  // no-key Claude path useful for server-beta subscription deployments.
+  if (!raw) return apiKey ? 'api-key' : 'subscription';
+  return 'unknown';
 }
 
 // Queue manager selection is fail-fast on misconfiguration. If the user

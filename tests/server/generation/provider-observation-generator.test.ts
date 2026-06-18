@@ -112,7 +112,7 @@ describe('ProviderObservationGenerator', () => {
   }
 
   it('completes a job using the fake provider response', async () => {
-    const xml = '<observation><type>discovery</type><title>OK</title><facts><fact>f</fact></facts></observation>';
+    const xml = '<observation><type>discovery</type><title>処理成功</title><facts><fact>fake provider の応答を保存した</fact></facts></observation>';
     const provider = new StubProvider(xml);
     const generator = new ProviderObservationGenerator({
       pool: pool as unknown as Parameters<typeof ProviderObservationGenerator['prototype']['process']>[0]['data'] extends never

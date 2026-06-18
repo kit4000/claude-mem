@@ -1,4 +1,4 @@
-import { join, dirname, basename, sep } from 'path';
+import { join, dirname, basename, sep, resolve } from 'path';
 import { homedir } from 'os';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { execSync } from 'child_process';
@@ -7,10 +7,15 @@ import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { logger } from '../utils/logger.js';
 
 function getDirname(): string {
-  if (typeof __dirname !== 'undefined') {
+  if (typeof __dirname !== 'undefined' && __dirname) {
     return __dirname;
   }
-  return dirname(fileURLToPath(import.meta.url));
+  const metaUrl = import.meta.url;
+  if (metaUrl) {
+    return dirname(fileURLToPath(metaUrl));
+  }
+  const entrypoint = process.argv[1];
+  return entrypoint ? dirname(resolve(entrypoint)) : process.cwd();
 }
 
 const _dirname = getDirname();

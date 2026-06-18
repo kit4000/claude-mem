@@ -227,16 +227,24 @@ export class PostgresObservationGenerationJobRepository {
     status: ObservationGenerationJobStatus;
     projectId: string;
     teamId: string;
+    sourceTypes?: ObservationGenerationJobSourceType[];
     limit?: number;
   }): Promise<PostgresObservationGenerationJob[]> {
     const result = await this.client.query<JobRow>(
       `
         SELECT * FROM observation_generation_jobs
         WHERE status = $1 AND project_id = $2 AND team_id = $3
+          AND ($5::text[] IS NULL OR source_type = ANY($5::text[]))
         ORDER BY created_at ASC
         LIMIT $4
       `,
-      [input.status, input.projectId, input.teamId, input.limit ?? 100]
+      [
+        input.status,
+        input.projectId,
+        input.teamId,
+        input.limit ?? 100,
+        input.sourceTypes && input.sourceTypes.length > 0 ? input.sourceTypes : null,
+      ]
     );
     return result.rows.map(mapJobRow);
   }

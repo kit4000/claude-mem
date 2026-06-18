@@ -13,7 +13,7 @@ export function PromptCard({ prompt }: PromptCardProps) {
     <div className="card prompt-card">
       <div className="card-header">
         <div className="card-header-left">
-          <span className="card-type">Prompt</span>
+          <span className="card-type">プロンプト</span>
           <span className={`card-source source-${prompt.platform_source || 'claude'}`}>
             {prompt.platform_source || 'claude'}
           </span>

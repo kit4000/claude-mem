@@ -136,7 +136,7 @@ export function renderAgentSummaryItem(
   formattedTime: string
 ): string[] {
   return [
-    `S${summary.id} ${summary.request || 'Session started'} (${formattedTime})`,
+    `S${summary.id} ${summary.request || 'セッション開始'} (${formattedTime})`,
   ];
 }
 

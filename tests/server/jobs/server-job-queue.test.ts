@@ -65,7 +65,7 @@ function buildFakeWorker(state: FakeWorkerState) {
         const ev = state.eventHandlers ?? (state.eventHandlers = new Map());
         ev.set(event, handler);
       },
-      run: () => {
+      run: async () => {
         state.ranWith = options.autorun === false ? 'autorun-false' : 'autorun-true';
       },
       close: async () => {

@@ -19,6 +19,7 @@ import { ServerV1PostgresRoutes } from '../routes/v1/ServerV1PostgresRoutes.js';
 import { SessionsObservationsAdapter } from '../compat/SessionsObservationsAdapter.js';
 import { SessionsSummarizeAdapter } from '../compat/SessionsSummarizeAdapter.js';
 import { ActiveServerBetaQueueManager } from './ActiveServerBetaQueueManager.js';
+import { ServerViewerApiRoutes } from './ServerViewerApiRoutes.js';
 import { ServerViewerRoutes } from './ServerViewerRoutes.js';
 import type { ServerBetaServiceGraph, ServerBetaQueueLaneMetric } from './types.js';
 
@@ -104,6 +105,7 @@ export class ServerBetaService {
   private readonly requestedPort: number;
   private boundPort: number | null = null;
   private readonly persistRuntimeState: boolean;
+  private readonly startTimeMs = Date.now();
   private server: Server | null = null;
   private stopping = false;
 
@@ -204,9 +206,17 @@ export class ServerBetaService {
       authMode: compatAuthMode,
     }));
 
+    // Server-beta viewer compatibility routes. The viewer bundle still calls
+    // the worker-era `/api/*` endpoints, so map those to Postgres before the
+    // static UI handler is mounted.
+    server.registerRoutes(new ServerViewerApiRoutes({
+      pool: this.graph.postgres.pool,
+      queueManager: this.graph.queueManager,
+      startTimeMs: this.startTimeMs,
+    }));
+
     // #2552 — mount the Viewer UI static handler so the viewer loads on the
-    // server runtime. Registered AFTER the /v1 and compat API routes so the
-    // viewer's own API calls resolve against those; express.static only
+    // server runtime. Registered AFTER all API routes; express.static only
     // matches existing files and the `/` GET only matches the root, so this
     // never shadows an API route.
     server.registerRoutes(new ServerViewerRoutes());
@@ -839,7 +849,13 @@ export async function runServerBetaGenerationWorker(): Promise<void> {
     queue: state.boundaries.queueManager,
     generation: state.boundaries.generationWorkerManager,
   });
-  console.log(JSON.stringify({ status: 'worker-running', runtime: SERVER_BETA_RUNTIME, pid: process.pid }));
+  console.log(JSON.stringify({
+    status: 'worker-running',
+    runtime: SERVER_BETA_RUNTIME,
+    pid: process.pid,
+    queue: state.boundaries.queueManager,
+    generation: state.boundaries.generationWorkerManager,
+  }));
 
   let stopping = false;
   const shutdown = async () => {
@@ -952,7 +968,7 @@ async function waitForPidExit(pid: number, timeoutMs: number): Promise<void> {
 
 if (process.argv[1]?.endsWith('ServerBetaService.ts') || process.argv[1]?.endsWith('server-beta-service.cjs')) {
   runServerBetaCli().catch(error => {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
     process.exit(1);
   });
 }

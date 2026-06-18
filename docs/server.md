@@ -59,7 +59,8 @@ the following are missing or invalid in Docker:
 | `CLAUDE_MEM_ALLOW_LOCAL_DEV_BYPASS` | Docker | Must NOT be `1`/`true` in Docker.                            |
 | `CLAUDE_MEM_GENERATION_DISABLED`  | Optional | Set to `true` on the HTTP service when running a separate worker. |
 | `CLAUDE_MEM_SERVER_PROVIDER`      | Worker   | One of `claude`, `gemini`, `openrouter`. Worker only.        |
-| `ANTHROPIC_API_KEY` (or alt)      | Worker   | Required by the chosen provider.                             |
+| `CLAUDE_MEM_SERVER_CLAUDE_AUTH_METHOD` | Worker | For `claude`: `subscription`/`oauth`/`cli` uses Claude Agent SDK + Claude Code OAuth; `api-key` uses direct Anthropic Messages API. |
+| `ANTHROPIC_API_KEY` (or alt)      | Worker   | Required only for direct API-key generation, Gemini, or OpenRouter. |
 
 Local development can still use SQLite + `local-dev` auth bypass **outside
 Docker only**. Deployable mode must use the table above.
@@ -137,6 +138,34 @@ poison.
   `CLAUDE_MEM_GENERATION_DISABLED=true` so the BullMQ Worker is **not**
   attached here.
 * `claude-mem-worker` — generation worker. Scale horizontally.
+
+For Claude subscription auth, keep `CLAUDE_MEM_SERVER_PROVIDER=claude` and set
+`CLAUDE_MEM_SERVER_CLAUDE_AUTH_METHOD=subscription` on the worker. The worker
+then uses the Claude Agent SDK path and expects Claude Code OAuth credentials to
+be available to the container, for example via a mounted credentials file seeded
+by the Docker entrypoint. If `ANTHROPIC_API_KEY` is present and no auth method
+is set, the worker preserves the old direct API-key behavior.
+
+On macOS, the recommended subscription setup is the compose override plus the
+Keychain sync launch agent:
+
+```sh
+npm run oauth:sync:install
+docker compose -f docker-compose.yml -f docker-compose.claude-oauth.yml up -d --build
+```
+
+The launch agent runs every 5 minutes and mirrors the `Claude Code-credentials`
+Keychain item into `.docker-claude-code-credentials.json` and
+`~/.claude/.credentials.json` with `0600` permissions. The worker reads the
+mounted file at generation spawn-time, so a fresh Keychain token is picked up
+without rebuilding the image. The sync script never prints token values.
+
+If Claude Code reports a stale or invalid login, refresh the host login first:
+
+```sh
+claude auth login --claudeai
+npm run oauth:sync
+```
 
 Bring it up:
 

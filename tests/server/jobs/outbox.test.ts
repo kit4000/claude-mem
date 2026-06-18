@@ -107,6 +107,7 @@ function buildStubJobRepo(state: StubJobRepoState): PostgresObservationGeneratio
     async listByStatusForScope(input) {
       return [...state.rows.values()].filter(
         r => r.status === input.status && r.projectId === input.projectId && r.teamId === input.teamId
+          && (!input.sourceTypes?.length || input.sourceTypes.includes(r.sourceType))
       );
     }
   } as unknown as PostgresObservationGenerationJobRepository;
@@ -327,6 +328,45 @@ describe('outbox.reconcileOnStartup', () => {
     const row = repoState.rows.get(created.id)!;
     expect(row.status).toBe('queued');
     expect(queueState.added).toHaveLength(1);
+  });
+
+  it('filters reconciliation rows by source type', async () => {
+    const repoState: StubJobRepoState = { rows: new Map(), counter: 0 };
+    const log: EventLogEntry[] = [];
+    const queueState: StubQueueState = { added: [], removed: [], failOnAdd: false };
+    const jobRepo = buildStubJobRepo(repoState);
+    const eventsRepo = buildStubEventsRepo(log);
+    const queue = buildStubQueue(queueState);
+
+    await jobRepo.create({
+      projectId: 'project_1',
+      teamId: 'team_1',
+      sourceType: 'agent_event',
+      sourceId: 'evt_1',
+      agentEventId: 'evt_1',
+      jobType: 'observation_generate_for_event',
+      payload: eventPayload,
+    });
+    await jobRepo.create({
+      projectId: 'project_1',
+      teamId: 'team_1',
+      sourceType: 'session_summary',
+      sourceId: 'session_1',
+      serverSessionId: 'session_1',
+      jobType: 'observation_generate_session_summary',
+      payload: { ...eventPayload, kind: 'summary', source_type: 'session_summary', source_id: 'session_1', server_session_id: 'session_1' },
+    });
+
+    const result = await reconcileOnStartup(jobRepo, eventsRepo, queue, {
+      projectId: 'project_1',
+      teamId: 'team_1'
+    }, {
+      sourceTypes: ['agent_event']
+    });
+
+    expect(result.requeued).toBe(1);
+    expect(queueState.added).toHaveLength(1);
+    expect(queueState.added[0]!.payload.source_type).toBe('agent_event');
   });
 });
 

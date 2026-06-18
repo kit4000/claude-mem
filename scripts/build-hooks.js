@@ -225,6 +225,7 @@ async function buildHooks() {
       description: 'Runtime dependencies for claude-mem bundled hooks',
       type: 'module',
       dependencies: {
+        '@anthropic-ai/claude-agent-sdk': packageJson.dependencies?.['@anthropic-ai/claude-agent-sdk'] ?? '^0.3.172',
         'zod': '^4.4.3',
         'tree-sitter-cli': '^0.26.5',
         'tree-sitter-c': '^0.24.1',
@@ -356,6 +357,7 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite',
+        '@anthropic-ai/claude-agent-sdk',
         'zod',
       ],
       define: {

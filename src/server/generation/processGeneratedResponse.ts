@@ -19,6 +19,8 @@ import {
   type PostgresPool,
 } from '../../storage/postgres/pool.js';
 import { stripTags } from '../../utils/tag-stripping.js';
+import { validateJapaneseNaturalLanguageFields } from '../../shared/japanese-output.js';
+import { normalizeProjectReferencesInValue } from '../../shared/project-display-name.js';
 
 // processGeneratedResponse owns the full "we got XML from a provider →
 // persist + link + advance outbox" pipeline. Every side-effect runs inside
@@ -72,9 +74,13 @@ export async function processGeneratedResponse(
   // Skip-summary or zero-observation responses are still a success — the
   // provider explicitly decided there's nothing worth recording (e.g.
   // privacy-stripped batch). Mark the job completed with no observations.
-  const observationsToWrite = parsed.observations ?? [];
+  const observationsToWrite = normalizeProjectReferencesInValue(parsed.observations ?? []);
   const skipped = parsed.summary?.skipped === true;
   const privateContentDetected = skipped || observationsToWrite.length === 0;
+  const languageViolation = validateObservationsJapanese(observationsToWrite);
+  if (languageViolation) {
+    return { kind: 'parse_error', jobId: job.id, reason: languageViolation };
+  }
 
   return await withPostgresTransaction(input.pool, async (client) => {
     const obsRepo = new PostgresObservationRepository(client);
@@ -270,6 +276,7 @@ export interface MarkGenerationFailedInput {
   classification?: string;
   retryable: boolean;
   workerId?: string;
+  details?: Record<string, unknown>;
 }
 
 /**
@@ -300,7 +307,11 @@ export async function markGenerationFailed(input: MarkGenerationFailedInput): Pr
       projectId: fresh.projectId,
       teamId: fresh.teamId,
       status: target,
-      lastError: { reason: input.reason, classification: input.classification ?? null },
+      lastError: {
+        reason: input.reason,
+        classification: input.classification ?? null,
+        ...(input.details ?? {}),
+      },
       ...(canRetry ? { nextAttemptAt: new Date(Date.now() + retryDelayMs(fresh.attempts)) } : {}),
     });
 
@@ -315,6 +326,7 @@ export async function markGenerationFailed(input: MarkGenerationFailedInput): Pr
         reason: input.reason,
         classification: input.classification ?? null,
         workerId: input.workerId ?? null,
+        ...(input.details ?? {}),
       },
     });
   });
@@ -343,8 +355,25 @@ export async function processSessionSummaryResponse(
     return { kind: 'parse_error', jobId: job.id, reason: 'parser rejected summary response' };
   }
 
-  const summary = parsed.summary ?? null;
+  const summary = parsed.summary ? normalizeProjectReferencesInValue(parsed.summary) : null;
   const skipped = summary?.skipped === true;
+  if (summary && !skipped) {
+    const languageValidation = validateJapaneseNaturalLanguageFields('session summary natural-language fields', [
+      summary.request,
+      summary.investigated,
+      summary.learned,
+      summary.completed,
+      summary.next_steps,
+      summary.notes,
+    ]);
+    if (!languageValidation.valid) {
+      return {
+        kind: 'parse_error',
+        jobId: job.id,
+        reason: languageValidation.reason ?? 'Japanese language requirement violation',
+      };
+    }
+  }
   const summaryContent = summary ? renderSummaryContent(summary) : '';
   const privateContentDetected = skipped || summaryContent.trim().length === 0;
 
@@ -512,12 +541,12 @@ export async function processSessionSummaryResponse(
 
 function renderSummaryContent(summary: ParsedSummary): string {
   const parts: string[] = [];
-  if (summary.request) parts.push(`Request: ${summary.request}`);
-  if (summary.investigated) parts.push(`Investigated: ${summary.investigated}`);
-  if (summary.learned) parts.push(`Learned: ${summary.learned}`);
-  if (summary.completed) parts.push(`Completed: ${summary.completed}`);
-  if (summary.next_steps) parts.push(`Next steps: ${summary.next_steps}`);
-  if (summary.notes) parts.push(`Notes: ${summary.notes}`);
+  if (summary.request) parts.push(`依頼: ${summary.request}`);
+  if (summary.investigated) parts.push(`調査: ${summary.investigated}`);
+  if (summary.learned) parts.push(`学び: ${summary.learned}`);
+  if (summary.completed) parts.push(`完了: ${summary.completed}`);
+  if (summary.next_steps) parts.push(`次の対応: ${summary.next_steps}`);
+  if (summary.notes) parts.push(`メモ: ${summary.notes}`);
   return parts.join('\n\n').trim();
 }
 
@@ -530,6 +559,22 @@ function renderObservationContent(observation: ParsedObservation): string {
     parts.push(observation.facts.map(f => `- ${f}`).join('\n'));
   }
   return parts.join('\n\n').trim();
+}
+
+function validateObservationsJapanese(observations: ParsedObservation[]): string | null {
+  for (let index = 0; index < observations.length; index++) {
+    const observation = observations[index]!;
+    const result = validateJapaneseNaturalLanguageFields(`observation[${index}] natural-language fields`, [
+      observation.title,
+      observation.subtitle,
+      observation.facts,
+      observation.narrative,
+    ]);
+    if (!result.valid) {
+      return result.reason ?? 'Japanese language requirement violation';
+    }
+  }
+  return null;
 }
 
 function retryDelayMs(attempts: number): number {

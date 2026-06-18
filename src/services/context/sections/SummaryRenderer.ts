@@ -38,15 +38,15 @@ export function renderSummaryFields(
   const output: string[] = [];
 
   if (forHuman) {
-    output.push(...Human.renderHumanSummaryField('Investigated', summary.investigated, colors.blue));
-    output.push(...Human.renderHumanSummaryField('Learned', summary.learned, colors.yellow));
-    output.push(...Human.renderHumanSummaryField('Completed', summary.completed, colors.green));
-    output.push(...Human.renderHumanSummaryField('Next Steps', summary.next_steps, colors.magenta));
+    output.push(...Human.renderHumanSummaryField('調査', summary.investigated, colors.blue));
+    output.push(...Human.renderHumanSummaryField('学び', summary.learned, colors.yellow));
+    output.push(...Human.renderHumanSummaryField('完了', summary.completed, colors.green));
+    output.push(...Human.renderHumanSummaryField('次の対応', summary.next_steps, colors.magenta));
   } else {
-    output.push(...Agent.renderAgentSummaryField('Investigated', summary.investigated));
-    output.push(...Agent.renderAgentSummaryField('Learned', summary.learned));
-    output.push(...Agent.renderAgentSummaryField('Completed', summary.completed));
-    output.push(...Agent.renderAgentSummaryField('Next Steps', summary.next_steps));
+    output.push(...Agent.renderAgentSummaryField('調査', summary.investigated));
+    output.push(...Agent.renderAgentSummaryField('学び', summary.learned));
+    output.push(...Agent.renderAgentSummaryField('完了', summary.completed));
+    output.push(...Agent.renderAgentSummaryField('次の対応', summary.next_steps));
   }
 
   return output;

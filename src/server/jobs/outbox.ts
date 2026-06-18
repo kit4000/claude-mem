@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type {
+  ObservationGenerationJobSourceType,
   PostgresObservationGenerationJob,
   PostgresObservationGenerationJobEventsRepository,
   PostgresObservationGenerationJobRepository
@@ -135,19 +136,21 @@ export async function reconcileOnStartup(
   eventsRepo: PostgresObservationGenerationJobEventsRepository,
   queue: ServerJobQueue<SingleSourceJobPayload>,
   scope: OutboxScope,
-  options?: { limit?: number }
+  options?: { limit?: number; sourceTypes?: ObservationGenerationJobSourceType[] }
 ): Promise<{ requeued: number; skipped: number }> {
   const limit = options?.limit ?? 500;
   const queued = await jobRepo.listByStatusForScope({
     status: 'queued',
     projectId: scope.projectId,
     teamId: scope.teamId,
+    sourceTypes: options?.sourceTypes,
     limit
   });
   const processing = await jobRepo.listByStatusForScope({
     status: 'processing',
     projectId: scope.projectId,
     teamId: scope.teamId,
+    sourceTypes: options?.sourceTypes,
     limit
   });
 

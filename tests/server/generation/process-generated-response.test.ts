@@ -100,8 +100,8 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
     const xml = `
       <observation>
         <type>discovery</type>
-        <title>Tool ran</title>
-        <facts><fact>command was ls</fact></facts>
+        <title>ツールを実行した</title>
+        <facts><fact>ls コマンドを実行した</fact></facts>
       </observation>
     `;
     const job = await reloadJob();
@@ -146,7 +146,7 @@ describe('processGeneratedResponse + markGenerationFailed', () => {
   });
 
   it('replaying the same job yields exactly one observation (idempotency)', async () => {
-    const xml = `<observation><type>discovery</type><title>Same</title><facts><fact>same</fact></facts></observation>`;
+    const xml = `<observation><type>discovery</type><title>同じ発見</title><facts><fact>同じ内容を記録した</fact></facts></observation>`;
 
     await storage.observationGenerationJobs.transitionStatus({
       id: jobId,

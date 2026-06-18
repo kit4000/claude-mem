@@ -292,7 +292,7 @@ export class ServerJobQueue<TPayload extends object = object> {
       });
       w.on('stalled', (jobId: string) => this.notifyStalled(jobId, 'worker'));
     }
-    worker.run();
+    void worker.run().catch((error: unknown) => this.notifyQueueError(error, 'worker'));
     this.worker = worker;
 
     // QueueEvents subscribes to Redis pub/sub for cross-process events

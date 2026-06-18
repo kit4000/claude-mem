@@ -12,7 +12,7 @@
 import { execFile, type ExecFileException } from 'child_process';
 import { promisify } from 'util';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
-import { userInfo } from 'os';
+import { homedir, userInfo } from 'os';
 import { join } from 'path';
 import { paths } from './paths.js';
 import { logger } from '../utils/logger.js';
@@ -28,7 +28,7 @@ const READ_TIMEOUT_MS = 5000;
 const EXPIRY_GRACE_MS = 60_000;
 
 export type OAuthTokenResult =
-  | { kind: 'present'; token: string; source: 'keychain' | 'env-fallback'; expiresAt?: number }
+  | { kind: 'present'; token: string; source: 'keychain' | 'credentials-file' | 'env-fallback'; expiresAt?: number }
   | { kind: 'expired'; reason: string; expiresAt?: number }
   | { kind: 'absent'; reason: string };
 
@@ -241,6 +241,40 @@ function parseKeychainPayload(raw: string): OAuthTokenResult {
   return { kind: 'present', token: accessToken, source: 'keychain', expiresAt: effectiveExpiresAt };
 }
 
+function readCredentialsFile(): OAuthTokenResult {
+  const candidates = [
+    process.env.CLAUDE_MEM_CREDENTIALS_FILE,
+    join(process.env.HOME || homedir(), '.claude', '.credentials.json'),
+  ].filter((candidate): candidate is string => !!candidate && candidate.trim().length > 0);
+
+  const missing: string[] = [];
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) {
+      missing.push(candidate);
+      continue;
+    }
+    try {
+      const parsed = parseKeychainPayload(readFileSync(candidate, 'utf-8'));
+      if (parsed.kind === 'present') {
+        return { ...parsed, source: 'credentials-file' };
+      }
+      return parsed;
+    } catch (error) {
+      return {
+        kind: 'absent',
+        reason: `Claude credentials file could not be read (${candidate}): ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  return {
+    kind: 'absent',
+    reason: missing.length > 0
+      ? `No Claude credentials file found at ${missing.join(', ')}`
+      : 'No Claude credentials file path available',
+  };
+}
+
 /**
  * Sidecar metadata file: when a fallback token is provided via env (CI, headless,
  * keychain-blocked environments), a sibling JSON file at
@@ -292,6 +326,11 @@ export async function readClaudeOAuthToken(): Promise<OAuthTokenResult> {
   // signal than an env var of unknown freshness.
   if (keychainResult.kind === 'present' || keychainResult.kind === 'expired') {
     return keychainResult;
+  }
+
+  const credentialsFileResult = readCredentialsFile();
+  if (credentialsFileResult.kind === 'present' || credentialsFileResult.kind === 'expired') {
+    return credentialsFileResult;
   }
 
   // Keychain absent: try env-fallback for CI/headless. Refuse if the sidecar

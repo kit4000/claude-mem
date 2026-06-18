@@ -91,6 +91,19 @@ deletes the temp file when `run.sh` returns — `docker run` is deliberately **n
 If no auth source is found, `run.sh` exits with an error pointing you at
 `claude login` or `ANTHROPIC_API_KEY`.
 
+For the server-beta compose worker, set
+`CLAUDE_MEM_SERVER_CLAUDE_AUTH_METHOD=subscription` to use the Claude Agent SDK
+path instead of direct Anthropic API-key billing. In that mode the container
+still needs Claude Code OAuth credentials available at runtime, typically by
+mounting a credentials file and setting `CLAUDE_MEM_CREDENTIALS_FILE` so
+`entrypoint.sh` can copy it into `$HOME/.claude/.credentials.json`.
+
+For the macOS compose setup, use `npm run oauth:sync:install` from the repo
+root. It installs a launchd agent that mirrors the `Claude Code-credentials`
+Keychain item into `.docker-claude-code-credentials.json` every 5 minutes,
+without printing secret values. The compose override mounts that file read-only
+into the worker.
+
 ## Manual invocation (without `run.sh`)
 
 ```bash

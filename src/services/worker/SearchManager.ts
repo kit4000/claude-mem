@@ -1192,25 +1192,25 @@ export class SearchManager {
         const summary = this.sessionStore.getSummaryForSession(session.memory_session_id);
         if (summary) {
           const promptLabel = summary.prompt_number ? ` (Prompt #${summary.prompt_number})` : '';
-          lines.push(`**Summary${promptLabel}**`);
+          lines.push(`**要約${promptLabel}**`);
           lines.push('');
 
-          if (summary.request) lines.push(`**Request:** ${summary.request}`);
-          if (summary.completed) lines.push(`**Completed:** ${summary.completed}`);
-          if (summary.learned) lines.push(`**Learned:** ${summary.learned}`);
-          if (summary.next_steps) lines.push(`**Next Steps:** ${summary.next_steps}`);
+          if (summary.request) lines.push(`**依頼:** ${summary.request}`);
+          if (summary.completed) lines.push(`**完了:** ${summary.completed}`);
+          if (summary.learned) lines.push(`**学び:** ${summary.learned}`);
+          if (summary.next_steps) lines.push(`**次の対応:** ${summary.next_steps}`);
 
           if (summary.files_read) {
             try {
               const filesRead = JSON.parse(summary.files_read);
               if (Array.isArray(filesRead) && filesRead.length > 0) {
-                lines.push(`**Files Read:** ${filesRead.join(', ')}`);
+                lines.push(`**読んだファイル:** ${filesRead.join(', ')}`);
               }
             } catch (error) {
               const errorObject = error instanceof Error ? error : new Error(String(error));
               logger.debug('WORKER', 'files_read is plain string, using as-is', {}, errorObject);
               if (summary.files_read.trim()) {
-                lines.push(`**Files Read:** ${summary.files_read}`);
+                lines.push(`**読んだファイル:** ${summary.files_read}`);
               }
             }
           }
@@ -1219,58 +1219,58 @@ export class SearchManager {
             try {
               const filesEdited = JSON.parse(summary.files_edited);
               if (Array.isArray(filesEdited) && filesEdited.length > 0) {
-                lines.push(`**Files Edited:** ${filesEdited.join(', ')}`);
+                lines.push(`**編集したファイル:** ${filesEdited.join(', ')}`);
               }
             } catch (error) {
               const errorObject = error instanceof Error ? error : new Error(String(error));
               logger.debug('WORKER', 'files_edited is plain string, using as-is', {}, errorObject);
               if (summary.files_edited.trim()) {
-                lines.push(`**Files Edited:** ${summary.files_edited}`);
+                lines.push(`**編集したファイル:** ${summary.files_edited}`);
               }
             }
           }
 
           const date = new Date(summary.created_at).toLocaleString();
-          lines.push(`**Date:** ${date}`);
+          lines.push(`**日時:** ${date}`);
         }
       } else if (session.status === 'active') {
-        lines.push('**In Progress**');
+        lines.push('**進行中**');
         lines.push('');
 
         if (session.user_prompt) {
-          lines.push(`**Request:** ${session.user_prompt}`);
+          lines.push(`**依頼:** ${session.user_prompt}`);
         }
 
         const observations = this.sessionStore.getObservationsForSession(session.memory_session_id);
         if (observations.length > 0) {
           lines.push('');
-          lines.push(`**Observations (${observations.length}):**`);
+          lines.push(`**観測 (${observations.length}):**`);
           for (const obs of observations) {
             lines.push(`- ${obs.title}`);
           }
         } else {
           lines.push('');
-          lines.push('*No observations yet*');
+          lines.push('*まだ観測はありません*');
         }
 
         lines.push('');
-        lines.push('**Status:** Active - summary pending');
+        lines.push('**状態:** アクティブ - 要約待ち');
 
         const date = new Date(session.started_at).toLocaleString();
-        lines.push(`**Date:** ${date}`);
+        lines.push(`**日時:** ${date}`);
       } else {
         lines.push(`**${session.status.charAt(0).toUpperCase() + session.status.slice(1)}**`);
         lines.push('');
 
         if (session.user_prompt) {
-          lines.push(`**Request:** ${session.user_prompt}`);
+          lines.push(`**依頼:** ${session.user_prompt}`);
         }
 
         lines.push('');
-        lines.push(`**Status:** ${session.status} - no summary available`);
+        lines.push(`**状態:** ${session.status} - 利用できる要約はありません`);
 
         const date = new Date(session.started_at).toLocaleString();
-        lines.push(`**Date:** ${date}`);
+        lines.push(`**日時:** ${date}`);
       }
 
       lines.push('');

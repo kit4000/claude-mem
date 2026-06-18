@@ -25,11 +25,50 @@ import type {
 // the queues exist as transports for `enqueueOutbox` to publish into.
 
 const QUEUE_KINDS: ServerGenerationJobKind[] = ['event', 'event-batch', 'summary', 'reindex'];
+const DEFAULT_QUEUE_CONCURRENCY = 1;
+const GLOBAL_CONCURRENCY_ENV = 'CLAUDE_MEM_GENERATION_WORKER_CONCURRENCY';
+const QUEUE_CONCURRENCY_ENV: Record<ServerGenerationJobKind, string> = {
+  event: 'CLAUDE_MEM_GENERATION_EVENT_CONCURRENCY',
+  'event-batch': 'CLAUDE_MEM_GENERATION_EVENT_BATCH_CONCURRENCY',
+  summary: 'CLAUDE_MEM_GENERATION_SUMMARY_CONCURRENCY',
+  reindex: 'CLAUDE_MEM_GENERATION_REINDEX_CONCURRENCY',
+};
+
+function parseQueueConcurrency(value: string | undefined, fallback: number): number {
+  if (!value?.trim()) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    logger.warn('QUEUE', 'ignoring invalid server-beta queue concurrency', {
+      value,
+      fallback,
+    });
+    return fallback;
+  }
+  return parsed;
+}
+
+export function resolveServerBetaQueueConcurrencies(
+  env: NodeJS.ProcessEnv = process.env,
+): Record<ServerGenerationJobKind, number> {
+  const globalConcurrency = parseQueueConcurrency(
+    env[GLOBAL_CONCURRENCY_ENV],
+    DEFAULT_QUEUE_CONCURRENCY,
+  );
+  return {
+    event: parseQueueConcurrency(env[QUEUE_CONCURRENCY_ENV.event], globalConcurrency),
+    'event-batch': parseQueueConcurrency(env[QUEUE_CONCURRENCY_ENV['event-batch']], globalConcurrency),
+    summary: parseQueueConcurrency(env[QUEUE_CONCURRENCY_ENV.summary], globalConcurrency),
+    reindex: parseQueueConcurrency(env[QUEUE_CONCURRENCY_ENV.reindex], globalConcurrency),
+  };
+}
 
 export class ActiveServerBetaQueueManager implements ServerBetaQueueManager {
   readonly kind = 'queue-manager' as const;
 
   private readonly queues: Map<ServerGenerationJobKind, ServerJobQueue<ServerGenerationJobPayload>>;
+  private readonly concurrencyByKind: Record<ServerGenerationJobKind, number>;
   private closed = false;
 
   constructor(
@@ -42,6 +81,7 @@ export class ActiveServerBetaQueueManager implements ServerBetaQueueManager {
           'do not instantiate when bullmq is not selected.',
       );
     }
+    this.concurrencyByKind = resolveServerBetaQueueConcurrencies();
     this.queues = queues ?? this.buildQueues(config);
   }
 
@@ -61,7 +101,11 @@ export class ActiveServerBetaQueueManager implements ServerBetaQueueManager {
     if (this.closed) {
       return { status: 'errored', reason: 'queue-manager closed' };
     }
-    const lanes = QUEUE_KINDS.map((kind) => ({ kind, name: SERVER_JOB_QUEUE_NAMES[kind] }));
+    const lanes = QUEUE_KINDS.map((kind) => ({
+      kind,
+      name: SERVER_JOB_QUEUE_NAMES[kind],
+      concurrency: this.concurrencyByKind[kind],
+    }));
     return {
       status: 'active',
       reason: 'BullMQ-backed queue manager wired',
@@ -151,6 +195,7 @@ export class ActiveServerBetaQueueManager implements ServerBetaQueueManager {
         new ServerJobQueue<ServerGenerationJobPayload>({
           name: SERVER_JOB_QUEUE_NAMES[kind],
           config,
+          concurrency: this.concurrencyByKind[kind],
         }),
       );
     }

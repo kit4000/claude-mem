@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, mock } from 'bun:test';
-import { ActiveServerBetaQueueManager } from '../../../src/server/runtime/ActiveServerBetaQueueManager.js';
+import {
+  ActiveServerBetaQueueManager,
+  resolveServerBetaQueueConcurrencies,
+} from '../../../src/server/runtime/ActiveServerBetaQueueManager.js';
 import { ServerJobQueue } from '../../../src/server/jobs/ServerJobQueue.js';
 import type {
   ServerGenerationJobKind,
@@ -63,8 +66,24 @@ describe('ActiveServerBetaQueueManager', () => {
     const health = manager.getHealth();
     expect(health.status).toBe('active');
     expect(health.details?.engine).toBe('bullmq');
-    const lanes = health.details?.lanes as Array<{ kind: string; name: string }> | undefined;
+    const lanes = health.details?.lanes as Array<{ kind: string; name: string; concurrency: number }> | undefined;
     expect(lanes?.map((l) => l.kind).sort()).toEqual(['event', 'event-batch', 'reindex', 'summary']);
+    expect(lanes?.every((l) => l.concurrency === 1)).toBe(true);
+  });
+
+  it('resolves per-lane concurrency from environment', () => {
+    const concurrency = resolveServerBetaQueueConcurrencies({
+      CLAUDE_MEM_GENERATION_WORKER_CONCURRENCY: '2',
+      CLAUDE_MEM_GENERATION_SUMMARY_CONCURRENCY: '1',
+      CLAUDE_MEM_GENERATION_REINDEX_CONCURRENCY: '4',
+    } as NodeJS.ProcessEnv);
+
+    expect(concurrency).toEqual({
+      event: 2,
+      'event-batch': 2,
+      summary: 1,
+      reindex: 4,
+    });
   });
 
   it('exposes per-kind queues via getQueue', () => {

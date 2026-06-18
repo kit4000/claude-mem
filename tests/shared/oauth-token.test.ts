@@ -23,6 +23,8 @@ const ORIGINAL_EXEC_FILE = childProcess.execFile;
 const ORIGINAL_PLATFORM = process.platform;
 const ORIGINAL_ENV_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 const ORIGINAL_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
+const ORIGINAL_CREDENTIALS_FILE = process.env.CLAUDE_MEM_CREDENTIALS_FILE;
+const ORIGINAL_HOME = process.env.HOME;
 
 let dataDirSpy: ReturnType<typeof spyOn> | undefined;
 let tempDir: string;
@@ -57,6 +59,7 @@ function restorePlatform(): void {
 beforeEach(() => {
   // Redirect DATA_DIR to a temp directory for marker file tests.
   tempDir = fs.mkdtempSync(join(fs.realpathSync(require('os').tmpdir()), 'claude-mem-oauth-test-'));
+  process.env.HOME = tempDir;
   dataDirSpy = spyOn(paths, 'dataDir').mockImplementation(() => tempDir);
 });
 
@@ -72,6 +75,16 @@ afterEach(() => {
     delete process.env.CLAUDE_MEM_DATA_DIR;
   } else {
     process.env.CLAUDE_MEM_DATA_DIR = ORIGINAL_DATA_DIR;
+  }
+  if (ORIGINAL_CREDENTIALS_FILE === undefined) {
+    delete process.env.CLAUDE_MEM_CREDENTIALS_FILE;
+  } else {
+    process.env.CLAUDE_MEM_CREDENTIALS_FILE = ORIGINAL_CREDENTIALS_FILE;
+  }
+  if (ORIGINAL_HOME === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = ORIGINAL_HOME;
   }
   // Clean up temp dir
   try {
@@ -163,6 +176,29 @@ describe('readClaudeOAuthToken — env-fallback branch', () => {
     if (result.kind === 'present') {
       expect(result.token).toBe('sk-ant-oat01-fallback');
       expect(result.source).toBe('env-fallback');
+    }
+  });
+
+  it('returns present from a mounted credentials file before env fallback', async () => {
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    const credentialsPath = join(tempDir, 'credentials.json');
+    const futureMs = Date.now() + 60 * 60 * 1000;
+    fs.writeFileSync(credentialsPath, JSON.stringify({
+      claudeAiOauth: {
+        accessToken: 'sk-ant-oat01-from-file',
+        refreshToken: 'refresh-token',
+        expiresAt: futureMs,
+      },
+    }));
+    process.env.CLAUDE_MEM_CREDENTIALS_FILE = credentialsPath;
+
+    const result = await readClaudeOAuthToken();
+
+    expect(result.kind).toBe('present');
+    if (result.kind === 'present') {
+      expect(result.token).toBe('sk-ant-oat01-from-file');
+      expect(result.source).toBe('credentials-file');
+      expect(result.expiresAt).toBe(futureMs);
     }
   });
 

@@ -44,7 +44,8 @@
 # Auth modes (#2554):
 #   - API-KEY auth (default here, CLAUDE_MEM_AUTH_MODE=api-key): every request
 #     carries a bearer key created with `server api-key create`. Generation
-#     uses a configured provider API key (ANTHROPIC_API_KEY/...). This path
+#     uses a configured provider API key (ANTHROPIC_API_KEY/...). Set
+#     CLAUDE_MEM_SERVER_CLAUDE_AUTH_METHOD=api-key to force this path. It
 #     bills per token and can be EXPENSIVE at high observation volume.
 #   - SUBSCRIPTION auth: point the generation provider at a Claude subscription
 #     / Pro session instead of a metered API key to avoid per-token API cost.
@@ -111,6 +112,7 @@ services:
       CLAUDE_MEM_WORKER_PORT: "37877"
       CLAUDE_MEM_DATA_DIR: /data/claude-mem
       CLAUDE_MEM_QUEUE_ENGINE: bullmq
+      CLAUDE_MEM_QUEUE_REDIS_PREFIX: claude_mem_37877
       # #2558 — REDIS_URL fallback: default to the in-stack valkey service so the
       # var is not a brittle hard requirement; override CLAUDE_MEM_REDIS_URL to
       # point at an external Redis.
@@ -154,18 +156,29 @@ services:
       CLAUDE_MEM_CONTAINER_MODE: worker
       CLAUDE_MEM_DOCKER: "1"
       CLAUDE_MEM_RUNTIME: server-beta
+      # Keep queue prefix derivation aligned with the HTTP service. The default
+      # prefix includes the server-beta port, so omitting this makes the worker
+      # listen on a different BullMQ namespace.
+      CLAUDE_MEM_SERVER_HOST: 0.0.0.0
+      CLAUDE_MEM_SERVER_PORT: "37877"
+      CLAUDE_MEM_WORKER_HOST: 0.0.0.0
+      CLAUDE_MEM_WORKER_PORT: "37877"
       CLAUDE_MEM_DATA_DIR: /data/claude-mem
       CLAUDE_MEM_QUEUE_ENGINE: bullmq
+      CLAUDE_MEM_QUEUE_REDIS_PREFIX: claude_mem_37877
       # #2558 — REDIS_URL fallback (see server service above).
       CLAUDE_MEM_REDIS_URL: ${CLAUDE_MEM_REDIS_URL:-redis://valkey:6379}
       CLAUDE_MEM_REDIS_MODE: docker
       CLAUDE_MEM_SERVER_DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
       CLAUDE_MEM_AUTH_MODE: api-key
       CLAUDE_MEM_CHROMA_ENABLED: "false"
-      # Provider configuration. ANTHROPIC_API_KEY (or
-      # CLAUDE_MEM_ANTHROPIC_API_KEY) is required for real generation; the
-      # worker stays running but never produces observations without one.
+      # Provider configuration. With no API key, the Claude provider uses the
+      # Claude Agent SDK path and expects Claude Code OAuth/subscription
+      # credentials to be available in the container. Set
+      # CLAUDE_MEM_SERVER_CLAUDE_AUTH_METHOD=api-key to force direct Anthropic
+      # API-key billing.
       CLAUDE_MEM_SERVER_PROVIDER: ${CLAUDE_MEM_SERVER_PROVIDER:-claude}
+      CLAUDE_MEM_SERVER_CLAUDE_AUTH_METHOD: ${CLAUDE_MEM_SERVER_CLAUDE_AUTH_METHOD:-subscription}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CLAUDE_MEM_ANTHROPIC_API_KEY: ${CLAUDE_MEM_ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}

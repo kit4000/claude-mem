@@ -22,6 +22,8 @@ import {
   type ProcessGeneratedResponseOutcome,
 } from './processGeneratedResponse.js';
 import { PostgresServerSessionsRepository } from '../../storage/postgres/server-sessions.js';
+import { stripTags } from '../../utils/tag-stripping.js';
+import { JAPANESE_LANGUAGE_REQUIREMENT_VIOLATION } from '../../shared/japanese-output.js';
 
 // Phase 11 — sentinel exception class so the worker can distinguish
 // scope-violation/revoked-key failures from generic processor errors and
@@ -34,6 +36,8 @@ export class ServerGenerationScopeViolationError extends Error {
     this.reason = reason;
   }
 }
+
+class ServerGenerationParseError extends Error {}
 
 // ProviderObservationGenerator is the BullMQ Worker processor for server-beta
 // observation generation. It does the following on every job invocation:
@@ -227,15 +231,19 @@ export class ProviderObservationGenerator {
         : await processGeneratedResponse(persistInput);
 
       if (outcome.kind === 'parse_error') {
+        const isLanguageViolation = outcome.reason.includes(JAPANESE_LANGUAGE_REQUIREMENT_VIOLATION);
+        const providerRawTextFailure = classifyProviderRawTextFailure(result.rawText);
         await markGenerationFailed({
           pool: this.options.pool,
           job: fresh,
           reason: outcome.reason,
-          classification: 'parse_error',
-          retryable: false,
+          classification: providerRawTextFailure?.classification
+            ?? (isLanguageViolation ? 'language_violation' : 'parse_error'),
+          retryable: providerRawTextFailure?.retryable ?? isLanguageViolation,
+          details: buildParseFailureDetails(result.rawText),
           ...(this.options.workerId !== undefined ? { workerId: this.options.workerId } : {}),
         });
-        throw new Error(`generation parse error: ${outcome.reason}`);
+        throw new ServerGenerationParseError(`generation parse error: ${outcome.reason}`);
       }
 
       logger.info('SYSTEM', 'generation completed', {
@@ -253,6 +261,9 @@ export class ProviderObservationGenerator {
         observationCount: outcome.observations.length,
       };
     } catch (error) {
+      if (error instanceof ServerGenerationParseError) {
+        throw error;
+      }
       const classified = error instanceof ServerClassifiedProviderError ? error : null;
       const retryable = classified
         ? classified.kind === 'transient' || classified.kind === 'rate_limit'
@@ -535,4 +546,47 @@ export class ProviderObservationGenerator {
     const repo = new PostgresProjectsRepository(this.options.pool);
     return await repo.getByIdForTeam(job.projectId, job.teamId);
   }
+}
+
+function buildParseFailureDetails(rawText: string): Record<string, unknown> {
+  const stripped = stripTags(rawText).stripped.replace(/\s+/g, ' ').trim();
+  const rawTrimmed = rawText.trim();
+  return {
+    rawTextLength: rawText.length,
+    rawTextPreview: stripped.slice(0, 500),
+    startsWithXmlRoot: /^<(observation|summary|skip_summary)\b/i.test(rawTrimmed),
+  };
+}
+
+export function classifyProviderRawTextFailure(rawText: string): {
+  classification: 'auth_invalid' | 'rate_limit' | 'transient';
+  retryable: boolean;
+} | null {
+  const lower = rawText.toLowerCase();
+  if (!lower) return null;
+
+  if (
+    lower.includes('failed to authenticate')
+    || lower.includes('invalid authentication credentials')
+    || lower.includes('not logged in')
+    || lower.includes('401')
+  ) {
+    return { classification: 'auth_invalid', retryable: false };
+  }
+
+  if (lower.includes('rate limit') || lower.includes('429')) {
+    return { classification: 'rate_limit', retryable: true };
+  }
+
+  if (
+    lower.includes('connection closed while thinking')
+    || lower.includes('socket connection was closed')
+    || lower.includes('temporarily unavailable')
+    || lower.includes('timeout')
+    || lower.includes('timed out')
+  ) {
+    return { classification: 'transient', retryable: true };
+  }
+
+  return null;
 }

@@ -1,0 +1,32 @@
+# Compose override for Claude Code OAuth / Claude subscription generation.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.claude-oauth.yml up -d
+#
+# The base docker-compose.yml intentionally stays compatible with API-key
+# providers. This override mounts an exported Claude Code OAuth credential file
+# into the generation worker only; the HTTP server still uses bearer API keys
+# for client authentication.
+#
+# On macOS, keep the mounted file fresh with:
+#   npm run oauth:sync:install
+# This installs a launchd agent that mirrors the "Claude Code-credentials"
+# Keychain item into ./.docker-claude-code-credentials.json every 5 minutes.
+
+services:
+  claude-mem-server:
+    environment:
+      # Mirror the worker lane settings so /v1/info reports the intended
+      # server-beta queue tuning even though HTTP does not consume jobs.
+      CLAUDE_MEM_GENERATION_EVENT_CONCURRENCY: ${CLAUDE_MEM_GENERATION_EVENT_CONCURRENCY:-4}
+      CLAUDE_MEM_GENERATION_SUMMARY_CONCURRENCY: ${CLAUDE_MEM_GENERATION_SUMMARY_CONCURRENCY:-1}
+
+  claude-mem-worker:
+    environment:
+      CLAUDE_MEM_CREDENTIALS_FILE: /run/secrets/claude-code-credentials.json
+      # Keep Claude subscription usage conservative, but allow the event lane
+      # to catch up when multiple clients write hooks at once.
+      CLAUDE_MEM_GENERATION_EVENT_CONCURRENCY: ${CLAUDE_MEM_GENERATION_EVENT_CONCURRENCY:-4}
+      CLAUDE_MEM_GENERATION_SUMMARY_CONCURRENCY: ${CLAUDE_MEM_GENERATION_SUMMARY_CONCURRENCY:-1}
+    volumes:
+      - ${CLAUDE_MEM_HOST_CREDENTIALS_FILE:-./.docker-claude-code-credentials.json}:/run/secrets/claude-code-credentials.json:ro

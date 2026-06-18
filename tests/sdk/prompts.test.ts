@@ -16,6 +16,8 @@ describe('buildObservationPrompt', () => {
     expect(prompt).toContain('Return either one or more <observation>...</observation> blocks, or an empty response');
     expect(prompt).toContain('Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection');
     expect(prompt).toContain('Never reply with prose such as "Skipping", "No substantive tool executions"');
+    expect(prompt).toContain('ABSOLUTE LANGUAGE RULE - JAPANESE ONLY');
+    expect(prompt).toContain('絶対ルール: 自然文フィールドは必ず日本語で書くこと');
   });
 });
 

@@ -5,6 +5,8 @@ import type { ModeConfig, ObservationType } from '../../../../services/domain/ty
 import { stripTags } from '../../../../utils/tag-stripping.js';
 import type { PostgresAgentEvent } from '../../../../storage/postgres/agent-events.js';
 import type { ServerGenerationContext } from './types.js';
+import { ABSOLUTE_JAPANESE_NATURAL_LANGUAGE_RULE } from '../../../../shared/japanese-output.js';
+import { HP_SHUTTLE_PROJECT_NAME_RULE } from '../../../../shared/project-display-name.js';
 
 // Fallback list mirrors the default observation types used by claude-mem
 // modes. The server-beta prompt does not strictly need a loaded mode file —
@@ -38,7 +40,8 @@ export interface BuildServerPromptResult {
 }
 
 const MAX_PAYLOAD_CHARS = 16 * 1024;
-
+const MAX_SUMMARY_PAYLOAD_CHARS = 2 * 1024;
+const MAX_SUMMARY_EVENTS = 30;
 export function buildServerGenerationPrompt(
   context: ServerGenerationContext,
   options: { mode?: ModeConfig } = {},
@@ -49,8 +52,15 @@ export function buildServerGenerationPrompt(
   let allEventsScrubbedToEmpty = true;
   const eventBlocks: string[] = [];
 
-  for (const event of context.events) {
-    const block = buildEventBlock(event);
+  const eventsForPrompt = context.job.sourceType === 'session_summary'
+    ? context.events.slice(-MAX_SUMMARY_EVENTS)
+    : context.events;
+  const payloadCharLimit = context.job.sourceType === 'session_summary'
+    ? MAX_SUMMARY_PAYLOAD_CHARS
+    : MAX_PAYLOAD_CHARS;
+
+  for (const event of eventsForPrompt) {
+    const block = buildEventBlock(event, payloadCharLimit);
     if (block.hadPrivate) {
       hadPrivateContent = true;
     }
@@ -69,27 +79,54 @@ export function buildServerGenerationPrompt(
     ? `\n  <project_name>${escapeXml(context.project.projectName)}</project_name>`
     : '';
 
-  const observationOutputSchema = buildObservationOutputSchema(mode);
+  const outputSchema = context.job.sourceType === 'session_summary'
+    ? buildSummaryOutputSchema()
+    : buildObservationOutputSchema(mode);
+  const taskInstruction = context.job.sourceType === 'session_summary'
+    ? [
+        'You are summarizing an agent session for durable memory. Return exactly',
+        'one <summary>...</summary> XML block describing what happened across',
+        'the events above. If the events contain nothing worth recording (e.g.,',
+        'everything was scrubbed by privacy filters or the activity was trivial),',
+        'return a single self-closing <skip_summary /> tag and nothing else.',
+        'Do not include any prose outside the XML.',
+      ].join('\n')
+    : [
+        'You are observing an agent at work. Return one or more',
+        '<observation>...</observation> XML blocks summarizing durable, useful',
+        'discoveries from the events above. If the events contain nothing worth',
+        'recording (e.g., everything was scrubbed by privacy filters or the',
+        'activity was trivial), return a single self-closing <skip_summary />',
+        'tag and nothing else. Do not include any prose outside the XML.',
+      ].join('\n');
+  const schemaHeader = context.job.sourceType === 'session_summary'
+    ? 'Schema for the <summary> block:'
+    : 'Schema for each <observation> block:';
+
+  const requestTag = context.job.sourceType === 'session_summary'
+    ? 'server_beta_summary_request'
+    : 'server_beta_observation_request';
 
   const prompt = [
-    '<server_beta_observation_request>',
+    `<${requestTag}>`,
     `  <project_id>${escapeXml(context.project.projectId)}</project_id>`,
     `  <team_id>${escapeXml(context.project.teamId)}</team_id>` + sessionTag + projectTag,
     `  <generation_job_id>${escapeXml(context.job.id)}</generation_job_id>`,
     '  <agent_events>',
     eventBlocks.length > 0 ? eventBlocks.join('\n') : '    <!-- empty after privacy stripping -->',
+    context.job.sourceType === 'session_summary' && context.events.length > eventsForPrompt.length
+      ? `    <!-- ${context.events.length - eventsForPrompt.length} older events omitted to keep the summary prompt within the model context window -->`
+      : '',
     '  </agent_events>',
-    '</server_beta_observation_request>',
+    `</${requestTag}>`,
     '',
-    'You are observing an agent at work. Return one or more',
-    '<observation>...</observation> XML blocks summarizing durable, useful',
-    'discoveries from the events above. If the events contain nothing worth',
-    'recording (e.g., everything was scrubbed by privacy filters or the',
-    'activity was trivial), return a single self-closing <skip_summary />',
-    'tag and nothing else. Do not include any prose outside the XML.',
+    taskInstruction,
     '',
-    'Schema for each <observation> block:',
-    observationOutputSchema,
+    ABSOLUTE_JAPANESE_NATURAL_LANGUAGE_RULE,
+    HP_SHUTTLE_PROJECT_NAME_RULE,
+    '',
+    schemaHeader,
+    outputSchema,
   ].join('\n');
 
   return { prompt, hadPrivateContent, skippedAll };
@@ -100,14 +137,14 @@ interface EventBlockResult {
   hadPrivate: boolean;
 }
 
-function buildEventBlock(event: PostgresAgentEvent): EventBlockResult {
+function buildEventBlock(event: PostgresAgentEvent, maxPayloadChars: number): EventBlockResult {
   const rawPayload =
     typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload ?? {}, null, 2);
 
   const stripResult = stripTags(rawPayload);
   const hadPrivate = (stripResult.counts.private ?? 0) > 0;
-  const truncatedPayload = stripResult.stripped.length > MAX_PAYLOAD_CHARS
-    ? stripResult.stripped.slice(0, MAX_PAYLOAD_CHARS) + '\n[...truncated]'
+  const truncatedPayload = stripResult.stripped.length > maxPayloadChars
+    ? stripResult.stripped.slice(0, maxPayloadChars) + '\n[...truncated]'
     : stripResult.stripped;
 
   if (truncatedPayload.trim().length === 0) {
@@ -151,6 +188,19 @@ function buildObservationOutputSchema(mode: ModeConfig | { observation_types: Re
     '  <files_read><file>...</file></files_read>',
     '  <files_modified><file>...</file></files_modified>',
     '</observation>',
+  ].join('\n');
+}
+
+function buildSummaryOutputSchema(): string {
+  return [
+    '<summary>',
+    '  <request>...</request>',
+    '  <investigated>...</investigated>',
+    '  <learned>...</learned>',
+    '  <completed>...</completed>',
+    '  <next_steps>...</next_steps>',
+    '  <notes>...</notes>',
+    '</summary>',
   ].join('\n');
 }
 

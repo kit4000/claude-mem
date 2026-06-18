@@ -1,6 +1,7 @@
 
 import { logger } from '../utils/logger.js';
 import type { ModeConfig } from '../services/domain/types.js';
+import { ABSOLUTE_JAPANESE_NATURAL_LANGUAGE_RULE } from '../shared/japanese-output.js';
 
 export const SUMMARY_MODE_MARKER = 'MODE SWITCH: PROGRESS SUMMARY';
 
@@ -36,6 +37,8 @@ ${mode.prompts.spatial_awareness}
 ${mode.prompts.recording_focus}
 
 ${mode.prompts.skip_guidance}
+
+${ABSOLUTE_JAPANESE_NATURAL_LANGUAGE_RULE}
 
 ${mode.prompts.output_format_header}
 
@@ -145,6 +148,8 @@ export function buildObservationPrompt(obs: Observation): string {
 
 If a <parameters> or <outcome> block above contains an "<elided chars=... />" marker, that field was truncated to fit the observer's context window. Describe only what you can see in the kept portion and do not infer details about the elided range.
 
+${ABSOLUTE_JAPANESE_NATURAL_LANGUAGE_RULE}
+
 Return either one or more <observation>...</observation> blocks, or an empty response if this tool use should be skipped.
 Concrete debugging findings from logs, queue state, database rows, session routing, or code-path inspection count as durable discoveries and should be recorded.
 Never reply with prose such as "Skipping", "No substantive tool executions", or any explanation outside XML. Non-XML text is discarded.`;
@@ -166,6 +171,8 @@ export function buildSummaryPrompt(session: SDKSession, mode: ModeConfig): strin
 
 ${mode.prompts.header_summary_checkpoint}
 ${mode.prompts.summary_instruction}
+
+${ABSOLUTE_JAPANESE_NATURAL_LANGUAGE_RULE}
 
 ${mode.prompts.summary_context_label}
 ${lastAssistantMessage}
@@ -203,6 +210,8 @@ ${mode.prompts.recording_focus}
 ${mode.prompts.skip_guidance}
 
 ${mode.prompts.continuation_instruction}
+
+${ABSOLUTE_JAPANESE_NATURAL_LANGUAGE_RULE}
 
 ${mode.prompts.output_format_header}
 
