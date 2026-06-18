@@ -64,12 +64,14 @@ const branch = git(['branch', '--show-current']);
 const head = short('HEAD');
 const upstream = 'origin/main';
 const upstreamHead = short(upstream);
+const mergeBase = git(['merge-base', 'HEAD', upstream]);
+const mergeBaseShort = git(['rev-parse', '--short=12', mergeBase]);
 const [aheadRaw, behindRaw] = git(['rev-list', '--left-right', '--count', `HEAD...${upstream}`]).split(/\s+/);
 const ahead = Number(aheadRaw);
 const behind = Number(behindRaw);
 const statusEntries = gitLines(['status', '--porcelain=v1']).map(parseStatusLine).filter(Boolean);
 const dirtyFiles = [...new Set(statusEntries.map(entry => entry.path))].sort();
-const upstreamFiles = gitLines(['diff', '--name-only', `HEAD..${upstream}`]).sort();
+const upstreamFiles = gitLines(['diff', '--name-only', `${mergeBase}..${upstream}`]).sort();
 const dirtySet = new Set(dirtyFiles);
 const upstreamSet = new Set(upstreamFiles);
 const overlapFiles = dirtyFiles.filter(path => upstreamSet.has(path));
@@ -82,13 +84,14 @@ const upstreamCommits = gitLines([
   '--pretty=format:%h %ad %s',
   `HEAD..${upstream}`,
 ]);
-const shortstat = git(['diff', '--shortstat', `HEAD..${upstream}`], { ignoreStderr: true });
+const shortstat = git(['diff', '--shortstat', `${mergeBase}..${upstream}`], { ignoreStderr: true });
 
 const report = {
   branch,
   head,
   upstream,
   upstreamHead,
+  mergeBase: mergeBaseShort,
   version: {
     head: versionAt('HEAD'),
     upstream: versionAt(upstream),
@@ -122,6 +125,7 @@ console.log('');
 console.log(`branch:        ${branch || '(detached)'}`);
 console.log(`HEAD:          ${head} (${report.version.head ?? 'unknown'})`);
 console.log(`${upstream}:   ${upstreamHead} (${report.version.upstream ?? 'unknown'})`);
+console.log(`merge-base:    ${mergeBaseShort}`);
 console.log(`ahead/behind:  ${ahead}/${behind}`);
 console.log(`upstream diff: ${shortstat || 'no changes'}`);
 console.log('');
