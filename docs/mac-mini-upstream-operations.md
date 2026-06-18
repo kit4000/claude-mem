@@ -39,6 +39,13 @@
 
 ## 更新前チェック
 
+この checkout では、繰り返し conflict 解決を覚えるために repo local で `rerere` を有効化している。
+
+```bash
+git config rerere.enabled true
+git config rerere.autoupdate true
+```
+
 ```bash
 npm run local:upstream-status
 ```
