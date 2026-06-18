@@ -71,13 +71,17 @@ const ahead = Number(aheadRaw);
 const behind = Number(behindRaw);
 const statusEntries = gitLines(['status', '--porcelain=v1']).map(parseStatusLine).filter(Boolean);
 const dirtyFiles = [...new Set(statusEntries.map(entry => entry.path))].sort();
+const localFiles = gitLines(['diff', '--name-only', `${mergeBase}..HEAD`]).sort();
 const upstreamFiles = gitLines(['diff', '--name-only', `${mergeBase}..${upstream}`]).sort();
 const dirtySet = new Set(dirtyFiles);
 const upstreamSet = new Set(upstreamFiles);
 const overlapFiles = dirtyFiles.filter(path => upstreamSet.has(path));
+const integrationOverlapFiles = localFiles.filter(path => upstreamSet.has(path));
 const generatedDirtyFiles = dirtyFiles.filter(isGenerated);
 const generatedOverlapFiles = overlapFiles.filter(isGenerated);
+const generatedIntegrationOverlapFiles = integrationOverlapFiles.filter(isGenerated);
 const localSourceDirtyFiles = dirtyFiles.filter(path => !isGenerated(path));
+const localSourceIntegrationOverlapFiles = integrationOverlapFiles.filter(path => !isGenerated(path));
 const upstreamCommits = gitLines([
   'log',
   '--date=short',
@@ -107,11 +111,15 @@ const report = {
   behind,
   shortstat,
   dirtyFiles,
+  localFiles,
   upstreamFiles,
   overlapFiles,
+  integrationOverlapFiles,
   generatedDirtyFiles,
   generatedOverlapFiles,
+  generatedIntegrationOverlapFiles,
   localSourceDirtyFiles,
+  localSourceIntegrationOverlapFiles,
   upstreamCommits,
 };
 
@@ -132,8 +140,10 @@ console.log('');
 console.log(`dirty files:              ${dirtyFiles.length}`);
 console.log(`local source dirty files: ${localSourceDirtyFiles.length}`);
 console.log(`generated dirty files:    ${generatedDirtyFiles.length}`);
-console.log(`overlap with upstream:    ${overlapFiles.length}`);
-console.log(`generated overlap:        ${generatedOverlapFiles.length}`);
+console.log(`local committed files:    ${localFiles.length}`);
+console.log(`dirty/upstream overlap:   ${overlapFiles.length}`);
+console.log(`commit/upstream overlap:  ${integrationOverlapFiles.length}`);
+console.log(`generated commit overlap: ${generatedIntegrationOverlapFiles.length}`);
 
 if (upstreamCommits.length > 0) {
   console.log('');
@@ -143,8 +153,17 @@ if (upstreamCommits.length > 0) {
 
 if (overlapFiles.length > 0) {
   console.log('');
-  console.log('files that are both locally changed and changed upstream:');
+  console.log('dirty files that are also changed upstream:');
   for (const file of overlapFiles) {
+    const marker = isGenerated(file) ? 'generated' : 'source';
+    console.log(`  [${marker}] ${file}`);
+  }
+}
+
+if (integrationOverlapFiles.length > 0) {
+  console.log('');
+  console.log('committed local files that are also changed upstream:');
+  for (const file of integrationOverlapFiles) {
     const marker = isGenerated(file) ? 'generated' : 'source';
     console.log(`  [${marker}] ${file}`);
   }

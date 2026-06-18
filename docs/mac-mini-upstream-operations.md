@@ -46,7 +46,8 @@ npm run local:upstream-status
 見る点:
 
 - `ahead/behind`: upstream に対して何 commit 遅れているか。
-- `overlap with upstream`: ローカル改造と upstream の変更が同じファイルに触れているか。
+- `commit/upstream overlap`: commit 済みローカル改造と upstream の変更が同じファイルに触れているか。
+- `dirty/upstream overlap`: 未 commit の作業と upstream の変更が同じファイルに触れているか。
 - `[generated]`: rebuild で処理する。手作業で意味を読みに行きすぎない。
 - `[source]`: 実際に設計判断が必要。
 
@@ -116,3 +117,14 @@ docker compose -f docker-compose.yml -f docker-compose.claude-oauth.yml exec -T 
 - 日本語固定は本来 `CLAUDE_MEM_OUTPUT_LANGUAGE=ja` のような設定化が望ましい。
 - HPShuttle alias は完全にローカル設定化し、コードに固有名を残さない。
 - retry/reconciliation hardening は汎用価値が高いので upstream PR 候補にする。
+
+## 2026-06-19 dry-run note
+
+`mac-mini/server-beta-local` から `origin/main` (`v13.6.2`) を一時 worktree で merge dry-run したところ、textual conflict は以下の生成物だけだった。
+
+- `plugin/scripts/mcp-server.cjs`
+- `plugin/scripts/server-beta-service.cjs`
+- `plugin/scripts/transcript-watcher.cjs`
+- `plugin/scripts/worker-service.cjs`
+
+source 側 conflict は出ていない。実更新時は生成物 conflict を source 解決後の `npm run build` で再生成する。
