@@ -168,7 +168,7 @@ export interface ServerBetaSearchObservationsResponse {
 // matched observations AND a pre-joined `context` string.
 export interface ServerBetaContextObservationsRequest {
   projectId: string;
-  query: string;
+  query?: string;
   limit?: number;
 }
 
@@ -258,7 +258,7 @@ export class ServerBetaClient {
     return this.request<ServerBetaContextObservationsResponse>(
       'POST',
       '/v1/context',
-      this.buildSearchPayload(input),
+      this.buildContextPayload(input),
     );
   }
 
@@ -305,6 +305,17 @@ export class ServerBetaClient {
     return {
       projectId: input.projectId,
       query: input.query,
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    };
+  }
+
+  buildContextPayload(
+    input: { projectId: string; query?: string; limit?: number },
+  ): Record<string, unknown> {
+    const query = input.query?.trim();
+    return {
+      projectId: input.projectId,
+      ...(query ? { query } : {}),
       ...(input.limit !== undefined ? { limit: input.limit } : {}),
     };
   }

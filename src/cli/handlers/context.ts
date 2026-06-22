@@ -15,11 +15,27 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
+import { getServerBetaContextForHook } from './server-beta-context.js';
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const cwd = input.cwd ?? process.cwd();
     const context = getProjectContext(cwd);
+
+    const emptyResult: HookResult = {
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      exitCode: HOOK_EXIT_CODES.SUCCESS,
+    };
+
+    const serverBetaContext = await getServerBetaContextForHook(input, {
+      hookEventName: 'SessionStart',
+      projectContext: context,
+      limit: 10,
+    });
+    if (serverBetaContext.handled) {
+      return serverBetaContext.hookResult ?? emptyResult;
+    }
+
     const port = getWorkerPort();
 
     const settings = loadFromFileOnce();
@@ -28,11 +44,6 @@ export const contextHandler: EventHandler = {
     const projectsParam = context.allProjects.join(',');
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
-
-    const emptyResult: HookResult = {
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
-      exitCode: HOOK_EXIT_CODES.SUCCESS,
-    };
 
     const contextResult = await executeWithWorkerFallback<string>(apiPath, 'GET');
     if (isWorkerFallback(contextResult)) {

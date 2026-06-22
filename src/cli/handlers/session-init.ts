@@ -13,6 +13,7 @@ import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { isInternalProtocolPayload } from '../../utils/tag-stripping.js';
 import { resolveRuntimeContext, logServerBetaFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerBetaClientError } from '../../services/hooks/server-beta-client.js';
+import { getServerBetaContextForHook } from './server-beta-context.js';
 
 interface SessionInitResponse {
   sessionDbId: number;
@@ -70,10 +71,13 @@ export const sessionInitHandler: EventHandler = {
           contentSessionId: sessionId,
           project,
         });
-        // Server-beta does not currently support the same context-injection
-        // protocol as the worker. Skip semantic injection in server-beta mode
-        // until the server-beta context endpoint exists.
-        return { continue: true, suppressOutput: true };
+        const contextResult = await getServerBetaContextForHook(input, {
+          hookEventName: 'UserPromptSubmit',
+          projectContext: getProjectContext(cwd),
+          query: prompt,
+          limit: 5,
+        });
+        return contextResult.hookResult ?? { continue: true, suppressOutput: true };
       } catch (error: unknown) {
         if (isServerBetaClientError(error) && error.isFallbackEligible()) {
           logServerBetaFallback(error.kind, {

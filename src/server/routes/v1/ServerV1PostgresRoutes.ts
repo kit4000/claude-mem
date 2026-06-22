@@ -219,6 +219,17 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         generationJobId: outbox?.id ?? null,
       });
 
+      if (event.eventType === 'context_injection') {
+        const payload = event.payload && typeof event.payload === 'object'
+          ? event.payload as Record<string, unknown>
+          : {};
+        logger.info(
+          'HTTP',
+          `server-beta context injection received | hook=${String(payload.hook_event_name ?? 'unknown')} results=${String(payload.result_count ?? 'unknown')} contextLength=${String(payload.context_length ?? 'unknown')} generate=${String(generate)}`,
+          { eventId: event.id, projectId: event.projectId, generationJobId: outbox?.id ?? null },
+        );
+      }
+
       if (wait) {
         let resolved = outbox;
         let waitTimedOut = false;
@@ -896,7 +907,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
     app.post('/v1/context', readAuth, this.handleCreate(
       z.object({
         projectId: z.string().min(1),
-        query: z.string().min(1),
+        query: z.string().optional(),
         limit: z.number().int().positive().max(50).optional(),
       }),
       async (req, res, body) => {
@@ -905,20 +916,28 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
-          const results = await repo.search({
-            projectId: body.projectId,
-            teamId,
-            query: body.query,
-            limit: body.limit ?? 10,
-          });
+          const query = body.query?.trim();
+          const limit = body.limit ?? 10;
+          const results = query
+            ? await repo.search({
+                projectId: body.projectId,
+                teamId,
+                query,
+                limit,
+              })
+            : await repo.listByProject({
+                projectId: body.projectId,
+                teamId,
+                limit,
+              });
           const context = results
             .map(observation => observation.content)
             .filter(text => typeof text === 'string' && text.length > 0)
             .join('\n\n');
           await this.auditRead(req, 'observation.read', null, body.projectId, {
-            mode: 'context',
-            query: body.query,
-            limit: body.limit ?? 10,
+            mode: query ? 'context' : 'context_recent',
+            query: query ?? null,
+            limit,
             resultCount: results.length,
             observationIds: results.map(o => o.id),
           });

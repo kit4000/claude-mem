@@ -254,6 +254,22 @@ describe('ServerBetaClient', () => {
     expect(result.observations).toHaveLength(2);
   });
 
+  it('contextObservations omits query when requesting recent project context', async () => {
+    installFetch(async () => new Response(
+      JSON.stringify({
+        observations: [{ id: 'o1', projectId: 'p1', content: 'recent' }],
+        context: 'recent',
+      }),
+      { status: 200 },
+    ));
+    const client = new ServerBetaClient({ serverBaseUrl: 'http://localhost:9999', apiKey: 'cmem_test' });
+    await client.contextObservations({ projectId: 'p1', limit: 10 });
+    expect(captured[0]?.url).toBe('http://localhost:9999/v1/context');
+    expect((captured[0]?.body as Record<string, unknown>).projectId).toBe('p1');
+    expect((captured[0]?.body as Record<string, unknown>).limit).toBe(10);
+    expect((captured[0]?.body as Record<string, unknown>).query).toBeUndefined();
+  });
+
   it('getJobStatus sends GET /v1/jobs/:id', async () => {
     installFetch(async () => new Response(
       JSON.stringify({ generationJob: { id: 'j1', status: 'queued' } }),
@@ -295,6 +311,14 @@ describe('ServerBetaClient', () => {
       projectId: 'p',
       query: 'q',
       limit: 7,
+    });
+    expect(client.buildContextPayload({ projectId: 'p', limit: 3 })).toEqual({
+      projectId: 'p',
+      limit: 3,
+    });
+    expect(client.buildContextPayload({ projectId: 'p', query: '  q  ' })).toEqual({
+      projectId: 'p',
+      query: 'q',
     });
   });
 });
