@@ -13,6 +13,10 @@ describe('project display name normalization', () => {
     expect(normalizeProjectDisplayName('SEOUP')).toBe('HPShuttle');
   });
 
+  it('collapses old SEOUP worktree-style display labels to HPShuttle', () => {
+    expect(normalizeProjectDisplayName('SEOUP/fix-content-json-25mib-split')).toBe('HPShuttle');
+  });
+
   it('maps the Japanese product name to HPShuttle', () => {
     expect(normalizeProjectDisplayName('ホームページシャトル')).toBe('HPShuttle');
   });

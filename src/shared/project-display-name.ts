@@ -15,6 +15,8 @@ export function normalizeProjectDisplayName(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
+  if (trimmed === 'SEOUP' || trimmed.startsWith('SEOUP/')) return 'HPShuttle';
+  if (trimmed === 'ホームページシャトル' || trimmed.startsWith('ホームページシャトル/')) return 'HPShuttle';
   return PROJECT_DISPLAY_NAME_ALIASES[trimmed] ?? trimmed;
 }
 
