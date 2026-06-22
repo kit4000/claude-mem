@@ -14,18 +14,24 @@ import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { getRedisQueueConfig } from '../queue/redis-config.js';
 import { ActiveServerBetaQueueManager } from './ActiveServerBetaQueueManager.js';
 import { ActiveServerBetaGenerationWorkerManager } from './ActiveServerBetaGenerationWorkerManager.js';
-import { reconcileOnStartup, type SingleSourceJobPayload } from '../jobs/outbox.js';
-import type { ServerJobQueue } from '../jobs/ServerJobQueue.js';
+import { buildServerJobId } from '../jobs/job-id.js';
+import {
+  assertServerGenerationJobPayload,
+  type ServerGenerationJobKind,
+  type ServerGenerationJobPayload,
+} from '../jobs/types.js';
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
 import { ClaudeSdkObservationProvider } from '../generation/providers/ClaudeSdkObservationProvider.js';
 import { GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
+import type {
+  ObservationGenerationJobSourceType,
+  PostgresObservationGenerationJob,
+} from '../../storage/postgres/generation-jobs.js';
 import { ServerBetaService } from './ServerBetaService.js';
 import {
-  DisabledServerBetaEventBroadcaster,
   DisabledServerBetaGenerationWorkerManager,
-  DisabledServerBetaProviderRegistry,
   DisabledServerBetaQueueManager,
   type ServerBetaAuthMode,
   type ServerBetaBootstrapStatus,
@@ -223,8 +229,6 @@ export async function createServerBetaService(
     authMode: options.authMode ?? parseAuthMode(process.env.CLAUDE_MEM_AUTH_MODE),
     queueManager,
     generationWorkerManager,
-    providerRegistry: new DisabledServerBetaProviderRegistry('Phase 5 keeps the provider registry boundary as inert; per-call providers are owned by the generation worker manager.'),
-    eventBroadcaster: new DisabledServerBetaEventBroadcaster('Phase 2 boundary only; SSE/event broadcasting is not wired.'),
     storage,
   };
 
@@ -256,28 +260,28 @@ async function reconcileServerBetaOutboxOnWorkerStartup(
     return;
   }
 
-  const lanes = [
-    { kind: 'event' as const, sourceTypes: ['agent_event' as const] },
-    { kind: 'summary' as const, sourceTypes: ['session_summary' as const] },
+  const lanes: Array<{
+    kind: Extract<ServerGenerationJobKind, 'event' | 'summary'>;
+    sourceTypes: ObservationGenerationJobSourceType[];
+  }> = [
+    { kind: 'event', sourceTypes: ['agent_event'] },
+    { kind: 'summary', sourceTypes: ['session_summary'] },
   ];
   let totalRequeued = 0;
   let totalSkipped = 0;
 
   for (const scope of scopeResult.rows) {
     for (const lane of lanes) {
-      const queue = queueManager.getQueue(lane.kind) as unknown as ServerJobQueue<SingleSourceJobPayload>;
       try {
-        const result = await reconcileOnStartup(
-          storage.observationGenerationJobs,
-          storage.observationGenerationJobEvents,
-          queue,
+        const result = await reconcileStartupGenerationJobs(
+          storage,
+          queueManager.getQueue(lane.kind),
           {
             projectId: scope.project_id,
             teamId: scope.team_id,
           },
-          {
-            sourceTypes: [...lane.sourceTypes],
-          },
+          lane.sourceTypes,
+          lane.kind,
         );
         totalRequeued += result.requeued;
         totalSkipped += result.skipped;
@@ -297,6 +301,125 @@ async function reconcileServerBetaOutboxOnWorkerStartup(
     requeued: totalRequeued,
     skipped: totalSkipped,
   });
+}
+
+async function reconcileStartupGenerationJobs(
+  storage: PostgresStorageRepositories,
+  queue: ReturnType<ActiveServerBetaQueueManager['getQueue']>,
+  scope: { projectId: string; teamId: string },
+  sourceTypes: ObservationGenerationJobSourceType[],
+  expectedKind: Extract<ServerGenerationJobKind, 'event' | 'summary'>,
+): Promise<{ requeued: number; skipped: number }> {
+  const limit = 500;
+  const queued = await storage.observationGenerationJobs.listByStatusForScope({
+    status: 'queued',
+    projectId: scope.projectId,
+    teamId: scope.teamId,
+    sourceTypes,
+    limit,
+  });
+  const processing = await storage.observationGenerationJobs.listByStatusForScope({
+    status: 'processing',
+    projectId: scope.projectId,
+    teamId: scope.teamId,
+    sourceTypes,
+    limit,
+  });
+
+  let requeued = 0;
+  let skipped = 0;
+  for (const row of [...processing, ...queued]) {
+    const result = await reconcileStartupGenerationJob(storage, queue, row, expectedKind);
+    if (result === 'requeued') {
+      requeued += 1;
+    } else {
+      skipped += 1;
+    }
+  }
+  return { requeued, skipped };
+}
+
+async function reconcileStartupGenerationJob(
+  storage: PostgresStorageRepositories,
+  queue: ReturnType<ActiveServerBetaQueueManager['getQueue']>,
+  row: PostgresObservationGenerationJob,
+  expectedKind: Extract<ServerGenerationJobKind, 'event' | 'summary'>,
+): Promise<'requeued' | 'skipped'> {
+  if (row.attempts >= row.maxAttempts) {
+    return 'skipped';
+  }
+
+  let payload: ServerGenerationJobPayload;
+  try {
+    payload = assertServerGenerationJobPayload(row.payload);
+  } catch (error) {
+    logger.warn('QUEUE', 'server-beta startup reconciliation skipped invalid persisted payload', {
+      jobId: row.id,
+      sourceType: row.sourceType,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return 'skipped';
+  }
+
+  if (payload.kind !== expectedKind) {
+    logger.warn('QUEUE', 'server-beta startup reconciliation skipped payload for wrong queue lane', {
+      jobId: row.id,
+      expectedKind,
+      actualKind: payload.kind,
+    });
+    return 'skipped';
+  }
+
+  const bullmqJobId = row.bullmqJobId ?? buildServerJobId({
+    kind: payload.kind,
+    team_id: payload.team_id,
+    project_id: payload.project_id,
+    source_type: payload.source_type,
+    source_id: payload.source_id,
+  });
+
+  try {
+    await queue.remove(bullmqJobId);
+  } catch (error) {
+    logger.debug?.('QUEUE', `remove before startup re-add ignored for ${bullmqJobId}`, {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  let current = row;
+  if (row.status === 'processing') {
+    const demoted = await storage.observationGenerationJobs.transitionStatus({
+      id: row.id,
+      projectId: row.projectId,
+      teamId: row.teamId,
+      status: 'queued',
+    });
+    if (!demoted) {
+      return 'skipped';
+    }
+    current = demoted;
+    await storage.observationGenerationJobEvents.append({
+      generationJobId: current.id,
+      projectId: current.projectId,
+      teamId: current.teamId,
+      eventType: 'queued',
+      statusAfter: 'queued',
+      attempt: current.attempts,
+      details: { source: 'reconcile_on_startup' },
+    });
+  }
+
+  await queue.add(bullmqJobId, payload);
+  await storage.observationGenerationJobEvents.append({
+    generationJobId: current.id,
+    projectId: current.projectId,
+    teamId: current.teamId,
+    eventType: 'enqueued',
+    statusAfter: 'queued',
+    attempt: current.attempts,
+    details: { source: 'reconcile_on_startup' },
+  });
+  return 'requeued';
 }
 
 function buildGenerationWorkerManager(
